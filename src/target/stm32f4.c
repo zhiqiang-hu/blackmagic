@@ -206,7 +206,7 @@ static char *stm32f4_get_chip_name(const uint32_t device_id)
 
 static uint16_t stm32f4_read_idcode(target_s *const t)
 {
-	const uint16_t idcode = target_mem_read32(t, DBGMCU_IDCODE) & 0xfffU;
+	const uint16_t idcode = target_mem32_read32(t, DBGMCU_IDCODE) & 0xfffU;
 	/*
 	 * F405 revision A has the wrong IDCODE, use ARM_CPUID to make the
 	 * distinction with F205. Revision is also wrong (0x2000 instead
@@ -257,8 +257,8 @@ bool gd32f4_probe(target_s *t)
 	target_add_commands(t, stm32f4_cmd_list, t->driver);
 
 	target_mem_map_free(t);
-	target_add_ram(t, 0x10000000, 0x10000); /* 64 k CCM Ram*/
-	target_add_ram(t, 0x20000000, 0x50000); /* 320 k RAM */
+	target_add_ram32(t, 0x10000000, 0x10000); /* 64 k CCM Ram*/
+	target_add_ram32(t, 0x20000000, 0x50000); /* 320 k RAM */
 
 	/* TODO implement DBS mode */
 	const uint8_t split = 12;
@@ -357,9 +357,9 @@ static bool stm32f4_attach(target_s *t)
 	t->target_storage = priv_storage;
 
 	/* Get the current value of the debug control register (and store it for later) */
-	priv_storage->dbgmcu_cr = target_mem_read32(t, DBGMCU_CR);
+	priv_storage->dbgmcu_cr = target_mem32_read32(t, DBGMCU_CR);
 	/* Enable debugging during all low power modes*/
-	target_mem_write32(
+	target_mem32_write32(
 		t, DBGMCU_CR, priv_storage->dbgmcu_cr | DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STANDBY | DBGMCU_CR_DBG_STOP);
 
 	/* Free any previously built memory map */
@@ -367,20 +367,20 @@ static bool stm32f4_attach(target_s *t)
 	/* And rebuild the RAM map */
 	bool use_dual_bank = !is_f7 && dual_bank;
 	if (is_f7) {
-		target_add_ram(t, 0x00000000, 0x4000);  /* 16kiB ITCM RAM */
-		target_add_ram(t, 0x20000000, 0x20000); /* 128kiB DTCM RAM */
-		target_add_ram(t, 0x20020000, 0x60000); /* 384kiB RAM */
+		target_add_ram32(t, 0x00000000, 0x4000);  /* 16kiB ITCM RAM */
+		target_add_ram32(t, 0x20000000, 0x20000); /* 128kiB DTCM RAM */
+		target_add_ram32(t, 0x20020000, 0x60000); /* 384kiB RAM */
 		if (dual_bank) {
-			const uint32_t option_ctrl = target_mem_read32(t, FLASH_OPTCR);
+			const uint32_t option_ctrl = target_mem32_read32(t, FLASH_OPTCR);
 			use_dual_bank = !(option_ctrl & FLASH_OPTCR_nDBANK);
 		}
 	} else {
 		if (has_ccm_ram)
-			target_add_ram(t, 0x10000000, 0x10000); /* 64kiB CCM RAM */
-		target_add_ram(t, 0x20000000, 0x50000);     /* 320kiB RAM */
+			target_add_ram32(t, 0x10000000, 0x10000); /* 64kiB CCM RAM */
+		target_add_ram32(t, 0x20000000, 0x50000);     /* 320kiB RAM */
 		if (dual_bank && max_flashsize < 2048U) {
 			/* Check the dual-bank status on 1MiB Flash devices */
-			const uint32_t option_ctrl = target_mem_read32(t, FLASH_OPTCR);
+			const uint32_t option_ctrl = target_mem32_read32(t, FLASH_OPTCR);
 			use_dual_bank = !(option_ctrl & FLASH_OPTCR_DB1M);
 		}
 	}
@@ -449,16 +449,16 @@ static void stm32f4_detach(target_s *t)
 {
 	stm32f4_priv_s *ps = t->target_storage;
 	/*reverse all changes to DBGMCU_CR*/
-	target_mem_write32(t, DBGMCU_CR, ps->dbgmcu_cr);
+	target_mem32_write32(t, DBGMCU_CR, ps->dbgmcu_cr);
 	cortexm_detach(t);
 }
 
 static void stm32f4_flash_unlock(target_s *t)
 {
-	if (target_mem_read32(t, FLASH_CR) & FLASH_CR_LOCK) {
+	if (target_mem32_read32(t, FLASH_CR) & FLASH_CR_LOCK) {
 		/* Enable FPEC controller access */
-		target_mem_write32(t, FLASH_KEYR, KEY1);
-		target_mem_write32(t, FLASH_KEYR, KEY2);
+		target_mem32_write32(t, FLASH_KEYR, KEY1);
+		target_mem32_write32(t, FLASH_KEYR, KEY2);
 	}
 }
 
@@ -467,7 +467,7 @@ static bool stm32f4_flash_busy_wait(target_s *const t, platform_timeout_s *const
 	/* Read FLASH_SR to poll for BSY bit */
 	uint32_t status = FLASH_SR_BSY;
 	while (status & FLASH_SR_BSY) {
-		status = target_mem_read32(t, FLASH_SR);
+		status = target_mem32_read32(t, FLASH_SR);
 		if ((status & SR_ERROR_MASK) || target_check_error(t)) {
 			DEBUG_ERROR("stm32f4 flash error 0x%" PRIx32 "\n", status);
 			return false;
@@ -502,9 +502,9 @@ static bool stm32f4_flash_erase(target_flash_s *f, target_addr_t addr, size_t le
 	for (size_t offset = 0; offset < len; offset += f->blocksize) {
 		uint32_t cr = FLASH_CR_EOPIE | FLASH_CR_ERRIE | FLASH_CR_SER | (psize * FLASH_CR_PSIZE16) | (sector << 3U);
 		/* Flash page erase instruction */
-		target_mem_write32(t, FLASH_CR, cr);
+		target_mem32_write32(t, FLASH_CR, cr);
 		/* write address to FMA */
-		target_mem_write32(t, FLASH_CR, cr | FLASH_CR_STRT);
+		target_mem32_write32(t, FLASH_CR, cr | FLASH_CR_STRT);
 
 		/* Wait for completion or an error */
 		if (!stm32f4_flash_busy_wait(t, NULL))
@@ -525,8 +525,8 @@ static bool stm32f4_flash_write(target_flash_s *f, target_addr_t dest, const voi
 	target_s *t = f->t;
 
 	align_e psize = ((stm32f4_flash_s *)f)->psize;
-	target_mem_write32(t, FLASH_CR, (psize * FLASH_CR_PSIZE16) | FLASH_CR_PG);
-	cortexm_mem_write_sized(t, dest, src, len, psize);
+	target_mem32_write32(t, FLASH_CR, (psize * FLASH_CR_PSIZE16) | FLASH_CR_PG);
+	cortexm_mem_write_aligned(t, dest, src, len, psize);
 
 	/* Wait for completion or an error */
 	return stm32f4_flash_busy_wait(t, NULL);
@@ -540,8 +540,8 @@ static bool stm32f4_mass_erase(target_s *t)
 
 	/* Flash mass erase start instruction */
 	const uint32_t ctrl = FLASH_CR_MER | (sf->bank_split ? FLASH_CR_MER1 : 0);
-	target_mem_write32(t, FLASH_CR, ctrl);
-	target_mem_write32(t, FLASH_CR, ctrl | FLASH_CR_STRT);
+	target_mem32_write32(t, FLASH_CR, ctrl);
+	target_mem32_write32(t, FLASH_CR, ctrl | FLASH_CR_STRT);
 
 	platform_timeout_s timeout;
 	platform_timeout_set(&timeout, 500);
@@ -604,7 +604,7 @@ static bool optcr_mask(target_s *const t, uint32_t *const val)
 		break;
 	case ID_STM32F72X:
 		val[2] &= ~0x800000ffU;
-		/* Fall through*/
+		BMD_FALLTHROUGH
 	case ID_STM32F74X:
 		val[0] &= ~0x3f000000U;
 		break;
@@ -630,7 +630,7 @@ static size_t stm32f4_opt_bytes_for(const uint16_t part_id)
 static bool stm32f4_option_write(target_s *t, uint32_t *const val, size_t count)
 {
 	val[0] &= ~(FLASH_OPTCR_OPTSTRT | FLASH_OPTCR_OPTLOCK);
-	uint32_t optcr = target_mem_read32(t, FLASH_OPTCR);
+	uint32_t optcr = target_mem32_read32(t, FLASH_OPTCR);
 	/* Check if watchdog and read protection is active.
 	 * When both are active, watchdog will trigger when erasing
 	 * to get back to level 0 protection and operation aborts!
@@ -641,8 +641,8 @@ static bool stm32f4_option_write(target_s *t, uint32_t *const val, size_t count)
 		val[0] |= FLASH_OPTCR_PROT_L1;
 		tc_printf(t, "Keeping L1 protection while HW Watchdog fuse is set!\n");
 	}
-	target_mem_write32(t, FLASH_OPTKEYR, OPTKEY1);
-	target_mem_write32(t, FLASH_OPTKEYR, OPTKEY2);
+	target_mem32_write32(t, FLASH_OPTKEYR, OPTKEY1);
+	target_mem32_write32(t, FLASH_OPTKEYR, OPTKEY2);
 	if (!stm32f4_flash_busy_wait(t, NULL))
 		return false;
 
@@ -650,13 +650,13 @@ static bool stm32f4_option_write(target_s *t, uint32_t *const val, size_t count)
 	/* Write option bytes instruction */
 	if (stm32f4_opt_bytes_for(part_id) > 1U && count > 1U) {
 		/* XXX: Do we need to read old value and then set it? */
-		target_mem_write32(t, FLASH_OPTCR + 4U, val[1]);
+		target_mem32_write32(t, FLASH_OPTCR + 4U, val[1]);
 		if (part_id == ID_STM32F72X && count > 2U)
-			target_mem_write32(t, FLASH_OPTCR + 8U, val[2]);
+			target_mem32_write32(t, FLASH_OPTCR + 8U, val[2]);
 	}
 
-	target_mem_write32(t, FLASH_OPTCR, val[0]);
-	target_mem_write32(t, FLASH_OPTCR, val[0] | FLASH_OPTCR_OPTSTRT);
+	target_mem32_write32(t, FLASH_OPTCR, val[0]);
+	target_mem32_write32(t, FLASH_OPTCR, val[0] | FLASH_OPTCR_OPTSTRT);
 
 	tc_printf(t, "Erasing flash\nThis may take a few seconds...\n");
 
@@ -667,7 +667,7 @@ static bool stm32f4_option_write(target_s *t, uint32_t *const val, size_t count)
 		return false;
 	tc_printf(t, "\n");
 
-	target_mem_write32(t, FLASH_OPTCR, FLASH_OPTCR_OPTLOCK);
+	target_mem32_write32(t, FLASH_OPTCR, FLASH_OPTCR_OPTLOCK);
 	/* Reset target to reload option bits.*/
 	target_reset(t);
 	return true;
@@ -741,11 +741,11 @@ static bool stm32f4_cmd_option(target_s *t, int argc, const char **argv)
 			opt_bytes > 1U ? " <OPTCR1>" : "", opt_bytes == 3U ? " <OPTCR2>" : "");
 
 	uint32_t val[3] = {0};
-	val[0] = target_mem_read32(t, FLASH_OPTCR);
+	val[0] = target_mem32_read32(t, FLASH_OPTCR);
 	if (opt_bytes > 1U) {
-		val[1] = target_mem_read32(t, FLASH_OPTCR + 4U);
+		val[1] = target_mem32_read32(t, FLASH_OPTCR + 4U);
 		if (opt_bytes == 3U)
-			val[2] = target_mem_read32(t, FLASH_OPTCR + 8U);
+			val[2] = target_mem32_read32(t, FLASH_OPTCR + 8U);
 	}
 	optcr_mask(t, val);
 	tc_printf(t, "OPTCR: 0x%08" PRIx32, val[0]);

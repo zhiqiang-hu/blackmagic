@@ -38,7 +38,7 @@
 #include "hex_utils.h"
 #include "exception.h"
 
-static bool remote_adiv5_check_error(
+bool remote_v3_adiv5_check_error(
 	const char *const func, adiv5_debug_port_s *const dp, const char *const buffer, const ssize_t length)
 {
 	/* Check the response length for error codes */
@@ -53,7 +53,7 @@ static bool remote_adiv5_check_error(
 		/* If the error part of the response code indicates a fault, store the fault value */
 		if (error == REMOTE_ERROR_FAULT)
 			dp->fault = response_code >> 8U;
-		/* If the error part indicates an exception had occured, make that happen here too */
+		/* If the error part indicates an exception had occurred, make that happen here too */
 		else if (error == REMOTE_ERROR_EXCEPTION)
 			raise_exception(response_code >> 8U, "Remote protocol exception");
 		/* Otherwise it's an unexpected error */
@@ -65,7 +65,7 @@ static bool remote_adiv5_check_error(
 	/* Check if the firmware is reporting some other kind of error */
 	else if (buffer[0] != REMOTE_RESP_OK)
 		DEBUG_ERROR("%s: Firmware reported unexpected error: %c\n", func, buffer[0]);
-	/* Return whether the remote indicated the request was successfull */
+	/* Return whether the remote indicated the request was successful */
 	return buffer[0] == REMOTE_RESP_OK;
 }
 
@@ -76,11 +76,11 @@ uint32_t remote_v3_adiv5_raw_access(
 	char buffer[REMOTE_MAX_MSG_SIZE];
 	/* Create the request and send it to the remote */
 	ssize_t length =
-		snprintf(buffer, REMOTE_MAX_MSG_SIZE, REMOTE_ADIv5_RAW_ACCESS_STR, dp->dev_index, rnw, addr, request_value);
+		snprintf(buffer, REMOTE_MAX_MSG_SIZE, REMOTE_ADIV5_RAW_ACCESS_STR, dp->dev_index, rnw, addr, request_value);
 	platform_buffer_write(buffer, length);
 	/* Read back the answer and check for errors */
 	length = platform_buffer_read(buffer, REMOTE_MAX_MSG_SIZE);
-	if (!remote_adiv5_check_error(__func__, dp, buffer, length))
+	if (!remote_v3_adiv5_check_error(__func__, dp, buffer, length))
 		return 0U;
 	/* If the response indicates all's OK, decode the data read and return it */
 	uint32_t result_value = 0U;
@@ -101,7 +101,7 @@ uint32_t remote_v3_adiv5_dp_read(adiv5_debug_port_s *const dp, const uint16_t ad
 	platform_buffer_write(buffer, length);
 	/* Read back the answer and check for errors */
 	length = platform_buffer_read(buffer, REMOTE_MAX_MSG_SIZE);
-	if (!remote_adiv5_check_error(__func__, dp, buffer, length))
+	if (!remote_v3_adiv5_check_error(__func__, dp, buffer, length))
 		return 0U;
 	/* If the response indicates all's OK, decode the data read and return it */
 	uint32_t value = 0U;
@@ -118,7 +118,7 @@ uint32_t remote_v3_adiv5_ap_read(adiv5_access_port_s *const ap, const uint16_t a
 	platform_buffer_write(buffer, length);
 	/* Read back the answer and check for errors */
 	length = platform_buffer_read(buffer, REMOTE_MAX_MSG_SIZE);
-	if (!remote_adiv5_check_error(__func__, ap->dp, buffer, length))
+	if (!remote_v3_adiv5_check_error(__func__, ap->dp, buffer, length))
 		return 0U;
 	/* If the response indicates all's OK, decode the data read and return it */
 	uint32_t value = 0U;
@@ -136,19 +136,24 @@ void remote_v3_adiv5_ap_write(adiv5_access_port_s *const ap, const uint16_t addr
 	platform_buffer_write(buffer, length);
 	/* Read back the answer and check for errors */
 	length = platform_buffer_read(buffer, REMOTE_MAX_MSG_SIZE);
-	if (!remote_adiv5_check_error(__func__, ap->dp, buffer, length))
+	if (!remote_v3_adiv5_check_error(__func__, ap->dp, buffer, length))
 		return;
 	DEBUG_PROBE("%s: addr %04x <- %08" PRIx32 "\n", __func__, addr, value);
 }
 
 void remote_v3_adiv5_mem_read_bytes(
-	adiv5_access_port_s *const ap, void *const dest, const uint32_t src, const size_t read_length)
+	adiv5_access_port_s *const ap, void *const dest, const target_addr64_t src, const size_t read_length)
 {
+	/* Check if this is supposed to be a 64-bit access and bail gracefully if it is */
+	if (ap->flags & ADIV5_AP_FLAGS_64BIT) {
+		DEBUG_ERROR("%s unable to do 64-bit memory access\n", __func__);
+		return;
+	}
 	/* Check if we have anything to do */
 	if (!read_length)
 		return;
 	char *const data = (char *)dest;
-	DEBUG_PROBE("%s: @%08" PRIx32 "+%zx\n", __func__, src, read_length);
+	DEBUG_PROBE("%s: @%08" PRIx64 "+%zx\n", __func__, src, read_length);
 	char buffer[REMOTE_MAX_MSG_SIZE];
 	/*
 	 * As we do, calculate how large a transfer we can do to the firmware.
@@ -160,13 +165,13 @@ void remote_v3_adiv5_mem_read_bytes(
 		/* Pick the amount left to read or the block size, whichever is smaller */
 		const size_t amount = MIN(read_length - offset, blocksize);
 		/* Create the request and send it to the remote */
-		ssize_t length = snprintf(buffer, REMOTE_MAX_MSG_SIZE, REMOTE_ADIv5_MEM_READ_STR, ap->dp->dev_index, ap->apsel,
-			ap->csw, src + offset, amount);
+		ssize_t length = snprintf(buffer, REMOTE_MAX_MSG_SIZE, REMOTE_ADIV5_MEM_READ_STR, ap->dp->dev_index, ap->apsel,
+			ap->csw, (uint32_t)src + offset, amount);
 		platform_buffer_write(buffer, length);
 
 		/* Read back the answer and check for errors */
 		length = platform_buffer_read(buffer, REMOTE_MAX_MSG_SIZE);
-		if (!remote_adiv5_check_error(__func__, ap->dp, buffer, length)) {
+		if (!remote_v3_adiv5_check_error(__func__, ap->dp, buffer, length)) {
 			DEBUG_ERROR("%s error around 0x%08zx\n", __func__, (size_t)src + offset);
 			return;
 		}
@@ -175,27 +180,32 @@ void remote_v3_adiv5_mem_read_bytes(
 	}
 }
 
-void remote_v3_adiv5_mem_write_bytes(adiv5_access_port_s *const ap, const uint32_t dest, const void *const src,
+void remote_v3_adiv5_mem_write_bytes(adiv5_access_port_s *const ap, const target_addr64_t dest, const void *const src,
 	const size_t write_length, const align_e align)
 {
+	/* Check if this is supposed to be a 64-bit access and bail gracefully if it is */
+	if (ap->flags & ADIV5_AP_FLAGS_64BIT) {
+		DEBUG_ERROR("%s unable to do 64-bit memory access\n", __func__);
+		return;
+	}
 	/* Check if we have anything to do */
 	if (!write_length)
 		return;
 	const char *data = (const char *)src;
-	DEBUG_PROBE("%s: @%08" PRIx32 "+%zx alignment %u\n", __func__, dest, write_length, align);
+	DEBUG_PROBE("%s: @%08" PRIx64 "+%zx alignment %u\n", __func__, dest, write_length, align);
 	/* + 1 for terminating NUL character */
 	char buffer[REMOTE_MAX_MSG_SIZE + 1U];
 	/* As we do, calculate how large a transfer we can do to the firmware */
 	const size_t alignment_mask = ~((1U << align) - 1U);
-	const size_t blocksize = ((REMOTE_MAX_MSG_SIZE - REMOTE_ADIv5_MEM_WRITE_LENGTH) / 2U) & alignment_mask;
+	const size_t blocksize = ((REMOTE_MAX_MSG_SIZE - REMOTE_ADIV5_MEM_WRITE_LENGTH) / 2U) & alignment_mask;
 	/* For each transfer block size, ask the firmware to write that block of bytes */
 	for (size_t offset = 0; offset < write_length; offset += blocksize) {
 		/* Pick the amount left to write or the block size, whichever is smaller */
 		const size_t amount = MIN(write_length - offset, blocksize);
 		/* Create the request and validate it ends up the right length */
-		ssize_t length = snprintf(buffer, REMOTE_MAX_MSG_SIZE, REMOTE_ADIv5_MEM_WRITE_STR, ap->dp->dev_index, ap->apsel,
-			ap->csw, align, dest + offset, amount);
-		assert(length == REMOTE_ADIv5_MEM_WRITE_LENGTH - 1U);
+		ssize_t length = snprintf(buffer, REMOTE_MAX_MSG_SIZE, REMOTE_ADIV5_MEM_WRITE_STR, ap->dp->dev_index, ap->apsel,
+			ap->csw, align, (uint32_t)dest + offset, amount);
+		assert(length == REMOTE_ADIV5_MEM_WRITE_LENGTH - 1U);
 		/* Encode the data to send after the request block and append the packet termination marker */
 		hexify(buffer + length, data + offset, amount);
 		length += (ssize_t)(amount * 2U);
@@ -205,7 +215,7 @@ void remote_v3_adiv5_mem_write_bytes(adiv5_access_port_s *const ap, const uint32
 
 		/* Read back the answer and check for errors */
 		length = platform_buffer_read(buffer, REMOTE_MAX_MSG_SIZE);
-		if (!remote_adiv5_check_error(__func__, ap->dp, buffer, length)) {
+		if (!remote_v3_adiv5_check_error(__func__, ap->dp, buffer, length)) {
 			DEBUG_ERROR("%s error around 0x%08zx\n", __func__, (size_t)dest + offset);
 			return;
 		}

@@ -24,8 +24,14 @@
  * the device, providing the XML memory map and Flash memory programming.
  *
  * References:
+ * RM0399 - STM32H745/755 and STM32H747/757 advanced Arm®-based 32-bit MCUs, Rev. 4
+ *   https://www.st.com/resource/en/reference_manual/rm0399-stm32h745755-and-stm32h747757-advanced-armbased-32bit-mcus-stmicroelectronics.pdf
  * RM0433 - STM32H742, STM32H743/753 and STM32H750 Value line advanced Arm®-based 32-bit MCUs, Rev. 8
  *   https://www.st.com/resource/en/reference_manual/dm00314099-stm32h742-stm32h743-753-and-stm32h750-value-line-advanced-arm-based-32-bit-mcus-stmicroelectronics.pdf
+ * RM0455 - STM32H7A3/7B3 and STM32H7B0 Value line advanced Arm®-based 32-bit MCUs, Rev. 10
+ *   https://www.st.com/resource/en/reference_manual/rm0455-stm32h7a37b3-and-stm32h7b0-value-line-advanced-armbased-32bit-mcus-stmicroelectronics.pdf
+ * RM0468 - STM32H723/733, STM32H725/735 and STM32H730 Value line advanced Arm®-based 32-bit MCUs, Rev. 3
+ *   https://www.st.com/resource/en/reference_manual/rm0468-stm32h723733-stm32h725735-and-stm32h730-value-line-advanced-armbased-32bit-mcus-stmicroelectronics.pdf
  */
 
 /*
@@ -85,9 +91,11 @@
 #define FLASH_CR_PSIZE64 (3U << 4U)
 #define FLASH_CR_FW      (1U << 6U)
 #define FLASH_CR_START   (1U << 7U)
-#define FLASH_CR_SNB_1   (1U << 8U)
 #define FLASH_CR_SNB     (3U << 8U)
 #define FLASH_CR_CRC_EN  (1U << 15U)
+
+#define STM32H74X_FLASH_CR_SNB_SHIFT 8U
+#define STM32H7BX_FLASH_CR_SNB_SHIFT 6U
 
 #define FLASH_OPTCR_OPTLOCK (1U << 0U)
 #define FLASH_OPTCR_OPTSTRT (1U << 1U)
@@ -105,8 +113,9 @@
 #define STM32H7_OPT_KEY1 0x08192a3bU
 #define STM32H7_OPT_KEY2 0x4c5d6e7fU
 
-#define DBGMCU_IDCODE      0x5c001000U
-#define STM32H7_FLASH_SIZE 0x1ff1e800U
+#define DBGMCU_IDCODE        0x5c001000U
+#define STM32H7_FLASH_SIZE   0x1ff1e880U
+#define STM32H7Bx_FLASH_SIZE 0x08fff80cU
 /* Access from processor address space.
  * Access via the APB-D is at 0xe00e1000 */
 #define DBGMCU_IDC  (DBGMCU_IDCODE + 0U)
@@ -119,6 +128,22 @@
 #define D1DBGCKEN   (1U << 21U)
 #define D3DBGCKEN   (1U << 22U)
 
+#define STM32H7_DBGMCU_IDCODE_DEV_MASK  0x00000fffU
+#define STM32H7_DBGMCU_IDCODE_REV_SHIFT 16U
+
+/*
+ * Flash capacity in STM32 chips is indicated by this number/letter:
+ * STM32H7B0VBT6 (STM32H74xxI, STM32H72xxE)
+ *           ^
+ * where known sizes for STM32H7 families are
+ * 8: 64 KiB (H7Rx, H7Sx: DS14359-DS14360)
+ * B: 128 KiB (Value line: DS12556, DS13315, DS13196)
+ * E: 512 KiB
+ * G: 1024 KiB
+ * I: 2048 KiB
+ * Refer to the (as of 2024) 17 datasheets, Ordering information.
+ * DS12110/DS12117, DS12919/DS12923, DS12930-DS12931, DS13139/DS13195, DS13311-DS13314.
+ */
 #define STM32H7_FLASH_BANK1_BASE    0x08000000U
 #define STM32H7_FLASH_BANK2_BASE    0x08100000U
 #define STM32H7_FLASH_BANK_SIZE     0x00100000U
@@ -127,9 +152,9 @@
 #define NUM_SECTOR_PER_BANK         8U
 #define FLASH_SECTOR_SIZE           0x20000U
 
-#define ID_STM32H74x 0x4500U /* RM0433, RM0399 */
-#define ID_STM32H7Bx 0x4800U /* RM0455 */
-#define ID_STM32H72x 0x4830U /* RM0468 */
+#define ID_STM32H74x 0x450U /* RM0433, RM0399 */
+#define ID_STM32H7Bx 0x480U /* RM0455 */
+#define ID_STM32H72x 0x483U /* RM0468 */
 
 typedef struct stm32h7_flash {
 	target_flash_s target_flash;
@@ -188,8 +213,11 @@ static void stm32h7_add_flash(target_s *target, uint32_t addr, size_t length, si
 
 bool stm32h7_probe(target_s *target)
 {
-	if (target->part_id != ID_STM32H74x && target->part_id != ID_STM32H7Bx && target->part_id != ID_STM32H72x)
+	const uint16_t part_id = target->part_id >> 4U;
+	if (part_id != ID_STM32H74x && part_id != ID_STM32H7Bx && part_id != ID_STM32H72x)
 		return false;
+	/* Update part_id on match */
+	target->part_id = part_id;
 
 	target->driver = "STM32H7";
 	target->attach = stm32h7_attach;
@@ -203,47 +231,97 @@ bool stm32h7_probe(target_s *target)
 		DEBUG_ERROR("calloc: failed in %s\n", __func__);
 		return false;
 	}
-	priv_storage->dbg_cr = target_mem_read32(target, DBGMCU_CR);
+	priv_storage->dbg_cr = target_mem32_read32(target, DBGMCU_CR);
 	target->target_storage = priv_storage;
 
 	/* Build the RAM map */
-	/* Table 7. Memory map and default device memory area attributes RM0433, pg130 */
-	target_add_ram(target, 0x00000000, 0x10000); /* ITCM RAM,   64kiB */
-	target_add_ram(target, 0x20000000, 0x20000); /* DTCM RAM,  128kiB */
-	target_add_ram(target, 0x24000000, 0x80000); /* AXI RAM,   512kiB */
-	target_add_ram(target, 0x30000000, 0x20000); /* AHB SRAM1, 128kiB */
-	target_add_ram(target, 0x30020000, 0x20000); /* AHB SRAM2, 128kiB */
-	target_add_ram(target, 0x30040000, 0x08000); /* AHB SRAM3,  32kiB */
-	target_add_ram(target, 0x38000000, 0x10000); /* AHB SRAM4,  64kiB */
+	target_add_ram32(target, 0x00000000, 0x10000); /* ITCM RAM,   64 KiB */
+	target_add_ram32(target, 0x20000000, 0x20000); /* DTCM RAM,  128 KiB */
+	switch (target->part_id) {
+	case ID_STM32H72x: {
+		/* Table 6. Memory map and default device memory area attributes RM0468, pg133 */
+		target_add_ram32(target, 0x24000000, 0x20000); /* AXI RAM,    128 KiB */
+		target_add_ram32(target, 0x24020000, 0x30000); /* AXI RAM,    192 KiB (TCM_AXI_SHARED) */
+		target_add_ram32(target, 0x30000000, 0x8000);  /* AHB SRAM1+2, 32 KiB [16+16] contiguous */
+		target_add_ram32(target, 0x38000000, 0x4000);  /* AHB SRAM4,   16 KiB, D3 domain */
+		break;
+	}
+	case ID_STM32H74x: {
+		/* Table 7. Memory map and default device memory area attributes RM0433, pg130 */
+		target_add_ram32(target, 0x24000000, 0x80000); /* AXI RAM,       512 KiB */
+		target_add_ram32(target, 0x30000000, 0x48000); /* AHB SRAM1+2+3, 288 KiB [128+128+32] contiguous */
+		target_add_ram32(target, 0x38000000, 0x10000); /* AHB SRAM4,      64 KiB, D3 domain */
+		break;
+	}
+	case ID_STM32H7Bx: {
+		/* Table 6. Memory map and default device memory area attributes RM0455, pg131 */
+		target_add_ram32(target, 0x24000000, 0x100000); /* AXI RAM1+2+3, 1024 KiB [256+384+384] contiguous, */
+		target_add_ram32(target, 0x30000000, 0x10000);  /* AHB SRAM1+2,   128 KiB [64+64] contiguous, */
+		target_add_ram32(target, 0x38000000, 0x8000);   /* SRD SRAM4,      32 KiB, Smart run domain */
+		break;
+	}
+	default:
+		break;
+	}
+
+	/*
+	 * Note on SRD from AN5293, 3. System architecture differences between STM32F7 and STM32H7 Series
+	 * > The D3 domain evolved into a domain called SRD domain (or smart-run domain).
+	 */
 
 	/* Build the Flash map */
 	switch (target->part_id) {
 	case ID_STM32H74x: {
-		/* Read the Flash size from the device (expressed in kiB) and multiply it by 1024 */
-		const uint32_t flash_size = target_mem_read32(target, STM32H7_FLASH_SIZE) << 10U;
-		/* STM32H750nB */
+		/* Read the Flash size from the device (expressed in KiB) and multiply it by 1024 */
+		const uint32_t flash_size = target_mem32_read32(target, STM32H7_FLASH_SIZE) << 10U;
+		/* STM32H750nB: 128 KiB, single sector of first bank */
 		if (flash_size == FLASH_SECTOR_SIZE)
 			stm32h7_add_flash(target, STM32H7_FLASH_BANK1_BASE, flash_size, FLASH_SECTOR_SIZE);
-		/* STM32H742xG/H743xG */
+		/* STM32H742xG/H743xG: two banks, each 512 KiB in only 4 sectors of 128 KiB, (and a hole in 0x08080000-0x080fffff), no crypto */
 		else if (flash_size == STM32H74xxG_FLASH_SIZE) {
 			stm32h7_add_flash(target, STM32H7_FLASH_BANK1_BASE, STM32H74xxG_FLASH_BANK_SIZE, FLASH_SECTOR_SIZE);
 			stm32h7_add_flash(target, STM32H7_FLASH_BANK2_BASE, STM32H74xxG_FLASH_BANK_SIZE, FLASH_SECTOR_SIZE);
 		}
-		/* STM32H742xL/H743xL/H753xL */
+		/* STM32H742xI/H743xI/H753xI: two banks, each 1024 KiB in 8 sectors of 128 KiB */
 		else {
 			stm32h7_add_flash(target, STM32H7_FLASH_BANK1_BASE, STM32H7_FLASH_BANK_SIZE, FLASH_SECTOR_SIZE);
 			stm32h7_add_flash(target, STM32H7_FLASH_BANK2_BASE, STM32H7_FLASH_BANK_SIZE, FLASH_SECTOR_SIZE);
 		}
 		break;
 	}
+	case ID_STM32H7Bx: {
+		/* Read the Flash size from the device (expressed in KiB) and multiply it by 1024 */
+		const uint32_t flash_size = target_mem32_read16(target, STM32H7Bx_FLASH_SIZE) << 10U;
+		/* STM32H7B0nB: 128 KiB in 16 sectors of 8 KiB */
+		if (flash_size == 0x20000U)
+			stm32h7_add_flash(target, STM32H7_FLASH_BANK1_BASE, flash_size, 0x2000U);
+		/* STM32H7A3xG: 1024 KiB in 128 sectors of 8 KiB, single bank, no crypto */
+		else if (flash_size == 1048576U)
+			stm32h7_add_flash(target, STM32H7_FLASH_BANK1_BASE, 1048576U, 0x2000U);
+		/* STM32H7A3xI/H7B3xI: two banks, each 1024 KiB in 128 sectors of 8 KiB */
+		else if (flash_size == 2097152U) {
+			stm32h7_add_flash(target, STM32H7_FLASH_BANK1_BASE, 1048576U, 0x2000U);
+			stm32h7_add_flash(target, STM32H7_FLASH_BANK2_BASE, 1048576U, 0x2000U);
+		}
+		break;
+	}
+	case ID_STM32H72x: {
+		/* Read the Flash size from the device (expressed in KiB) and multiply it by 1024 */
+		const uint32_t flash_size = target_mem32_read32(target, STM32H7_FLASH_SIZE) << 10U;
+		/*
+		 * STM32H723xE/H725xE: 512 KiB in 4 sectors of 128 KiB, single bank, no crypto
+		 * STM32H72xxG (H723xG/H733xG, H725xG/H735xG): 1024 KiB in 8 sectors of 128 KiB, single bank
+		 */
+		stm32h7_add_flash(target, STM32H7_FLASH_BANK1_BASE, flash_size, FLASH_SECTOR_SIZE);
+		break;
+	}
 	default:
-		stm32h7_add_flash(target, STM32H7_FLASH_BANK1_BASE, STM32H7_FLASH_BANK_SIZE, FLASH_SECTOR_SIZE);
-		stm32h7_add_flash(target, STM32H7_FLASH_BANK2_BASE, STM32H7_FLASH_BANK_SIZE, FLASH_SECTOR_SIZE);
+		break;
 	}
 
 	/* RM0433 Rev 4 is not really clear, what bits are needed in DBGMCU_CR. Maybe more flags needed? */
 	const uint32_t dbgmcu_ctrl = DBGSLEEP_D1 | D1DBGCKEN;
-	target_mem_write32(target, DBGMCU_CR, dbgmcu_ctrl);
+	target_mem32_write32(target, DBGMCU_CR, dbgmcu_ctrl);
 	return true;
 }
 
@@ -256,7 +334,7 @@ static bool stm32h7_attach(target_s *target)
 	 * will be aborted by the Watchdog and erase fails!
 	 * Setting IWDG_KR to 0xaaaa does not seem to help!
 	 */
-	const uint32_t optsr = target_mem_read32(target, FPEC1_BASE + FLASH_OPTSR);
+	const uint32_t optsr = target_mem32_read32(target, FPEC1_BASE + FLASH_OPTSR);
 	if (!(optsr & FLASH_OPTSR_IWDG1_SW))
 		tc_printf(target, "Hardware IWDG running. Expect failure. Set IWDG1_SW!");
 	return true;
@@ -265,7 +343,7 @@ static bool stm32h7_attach(target_s *target)
 static void stm32h7_detach(target_s *target)
 {
 	stm32h7_priv_s *ps = (stm32h7_priv_s *)target->target_storage;
-	target_mem_write32(target, DBGMCU_CR, ps->dbg_cr);
+	target_mem32_write32(target, DBGMCU_CR, ps->dbg_cr);
 	cortexm_detach(target);
 }
 
@@ -273,10 +351,10 @@ static bool stm32h7_flash_busy_wait(target_s *const target, const uint32_t regba
 {
 	uint32_t status = FLASH_SR_BSY | FLASH_SR_QW;
 	while (status & (FLASH_SR_BSY | FLASH_SR_QW)) {
-		status = target_mem_read32(target, regbase + FLASH_SR);
+		status = target_mem32_read32(target, regbase + FLASH_SR);
 		if ((status & FLASH_SR_ERROR_MASK) || target_check_error(target)) {
 			DEBUG_ERROR("%s: error status %08" PRIx32 "\n", __func__, status);
-			target_mem_write32(target, regbase + FLASH_CCR, status & FLASH_SR_ERROR_MASK);
+			target_mem32_write32(target, regbase + FLASH_CCR, status & FLASH_SR_ERROR_MASK);
 			return false;
 		}
 	}
@@ -297,38 +375,71 @@ static bool stm32h7_flash_unlock(target_s *const target, const uint32_t addr)
 	if (!stm32h7_flash_busy_wait(target, regbase))
 		return false;
 	/* Unlock the device Flash if not already unlocked (it's an error to re-key the controller if it is) */
-	if (target_mem_read32(target, regbase + FLASH_CR) & FLASH_CR_LOCK) {
+	if (target_mem32_read32(target, regbase + FLASH_CR) & FLASH_CR_LOCK) {
 		/* Enable Flash controller access */
-		target_mem_write32(target, regbase + FLASH_KEYR, STM32H7_FLASH_KEY1);
-		target_mem_write32(target, regbase + FLASH_KEYR, STM32H7_FLASH_KEY2);
+		target_mem32_write32(target, regbase + FLASH_KEYR, STM32H7_FLASH_KEY1);
+		target_mem32_write32(target, regbase + FLASH_KEYR, STM32H7_FLASH_KEY2);
 	}
 	/* Return whether we were able to put the device into unlocked mode */
-	return !(target_mem_read32(target, regbase + FLASH_CR) & FLASH_CR_LOCK);
+	return !(target_mem32_read32(target, regbase + FLASH_CR) & FLASH_CR_LOCK);
+}
+
+/* Helper for offsetting FLASH_CR bits correctly */
+static uint32_t stm32h7_flash_cr(uint32_t sector_size, const uint32_t ctrl, const uint8_t sector_number)
+{
+	uint32_t command = ctrl;
+	/* H74x, H72x IP: 128 KiB and has PSIZE */
+	if (sector_size == FLASH_SECTOR_SIZE) {
+		command |= sector_number << STM32H74X_FLASH_CR_SNB_SHIFT;
+		DEBUG_TARGET("%s: patching FLASH_CR from 0x%08" PRIx32 " to 0x%08" PRIx32 "\n", __func__, ctrl, command);
+		return command;
+	}
+
+	/* H7Bx IP: 8 KiB and no PSIZE */
+	/* Save and right-shift FW, START bits */
+	const uint32_t temp_fw_start = command & (FLASH_CR_FW | FLASH_CR_START);
+	/* Parallelism is ignored */
+	command &= ~(FLASH_CR_PSIZE64 | FLASH_CR_FW | FLASH_CR_START);
+	/* Restore FW, START to H7Bx-correct bits */
+	command |= temp_fw_start >> 2U;
+	/* SNB offset is different, too */
+	command |= sector_number << STM32H7BX_FLASH_CR_SNB_SHIFT;
+	DEBUG_TARGET("%s: patching FLASH_CR from 0x%08" PRIx32 " to 0x%08" PRIx32 "\n", __func__, ctrl, command);
+	return command;
 }
 
 static bool stm32h7_flash_erase(target_flash_s *const target_flash, target_addr_t addr, const size_t len)
 {
+	const uint32_t sector_size = target_flash->blocksize;
 	target_s *target = target_flash->t;
 	const stm32h7_flash_s *const flash = (stm32h7_flash_s *)target_flash;
 	/* Unlock the Flash */
 	if (!stm32h7_flash_unlock(target, addr))
 		return false;
 	/* We come out of reset with HSI 64 MHz. Adapt FLASH_ACR.*/
-	target_mem_write32(target, flash->regbase + FLASH_ACR, 0);
-	addr &= (NUM_SECTOR_PER_BANK * FLASH_SECTOR_SIZE) - 1U;
-	const size_t end_sector = (addr + len - 1U) / FLASH_SECTOR_SIZE;
+	uint32_t acr = 0;
+	/* H7Bx starts up in VOS3 from HSI 64 MHz with default ACR of 0x13 */
+	if (sector_size == 0x2000U)
+		acr = 0x13;
+	target_mem32_write32(target, flash->regbase + FLASH_ACR, acr);
+	/* Calculate SNB span */
+	addr &= target_flash->length - 1U;
+	const size_t end_sector = (addr + len - 1U) / sector_size;
 	const align_e psize = flash->psize;
 	const uint32_t reg_base = flash->regbase;
 
-	for (size_t begin_sector = addr / FLASH_SECTOR_SIZE; begin_sector <= end_sector; ++begin_sector) {
-		/* Erase the current Flash sector */
-		const uint32_t ctrl = (psize * FLASH_CR_PSIZE16) | FLASH_CR_SER | (begin_sector * FLASH_CR_SNB_1);
-		target_mem_write32(target, reg_base + FLASH_CR, ctrl);
-		target_mem_write32(target, reg_base + FLASH_CR, ctrl | FLASH_CR_START);
+	for (size_t begin_sector = addr / sector_size; begin_sector <= end_sector; ++begin_sector) {
+		/* Select current Flash sector for erasing */
+		const uint32_t ctrl_h74 = (psize * FLASH_CR_PSIZE16) | FLASH_CR_SER;
+		const uint32_t ctrl = stm32h7_flash_cr(sector_size, ctrl_h74, begin_sector);
+		target_mem32_write32(target, reg_base + FLASH_CR, ctrl);
+		/* Start erase (as a separate command). Note START1 is at different positions, so use the helper again. */
+		const uint32_t ctrl_start = stm32h7_flash_cr(sector_size, ctrl_h74 | FLASH_CR_START, begin_sector);
+		target_mem32_write32(target, reg_base + FLASH_CR, ctrl_start);
 
 		/* Wait for the operation to complete and report errors */
 		DEBUG_INFO("Erasing, ctrl = %08" PRIx32 " status = %08" PRIx32 "\n",
-			target_mem_read32(target, reg_base + FLASH_CR), target_mem_read32(target, reg_base + FLASH_SR));
+			target_mem32_read32(target, reg_base + FLASH_CR), target_mem32_read32(target, reg_base + FLASH_SR));
 
 		if (!stm32h7_flash_busy_wait(target, reg_base))
 			return false;
@@ -346,20 +457,21 @@ static bool stm32h7_flash_write(
 		return false;
 
 	/* Prepare the Flash write operation */
-	const uint32_t ctrl = flash->psize * FLASH_CR_PSIZE16;
-	target_mem_write32(target, flash->regbase + FLASH_CR, ctrl);
-	target_mem_write32(target, flash->regbase + FLASH_CR, ctrl | FLASH_CR_PG);
+	const uint32_t ctrl = stm32h7_flash_cr(target_flash->blocksize, flash->psize * FLASH_CR_PSIZE16, 0);
+	target_mem32_write32(target, flash->regbase + FLASH_CR, ctrl);
+	/* Submit Page Program command */
+	target_mem32_write32(target, flash->regbase + FLASH_CR, ctrl | FLASH_CR_PG);
 	/* does H7 stall?*/
 
 	/* Write the data to the Flash */
-	target_mem_write(target, dest, src, len);
+	target_mem32_write(target, dest, src, len);
 
 	/* Wait for the operation to complete and report errors */
 	if (!stm32h7_flash_busy_wait(target, flash->regbase))
 		return false;
 
 	/* Close write windows */
-	target_mem_write32(target, flash->regbase + FLASH_CR, 0);
+	target_mem32_write32(target, flash->regbase + FLASH_CR, 0);
 	return true;
 }
 
@@ -371,15 +483,16 @@ static bool stm32h7_erase_bank(
 		return false;
 	}
 	/* BER and start can be merged (§3.3.10). */
-	const uint32_t ctrl = (psize * FLASH_CR_PSIZE16) | FLASH_CR_BER | FLASH_CR_START;
-	target_mem_write32(target, reg_base + FLASH_CR, ctrl);
+	const uint32_t ctrl =
+		stm32h7_flash_cr(target->flash->blocksize, (psize * FLASH_CR_PSIZE16) | FLASH_CR_BER | FLASH_CR_START, 0);
+	target_mem32_write32(target, reg_base + FLASH_CR, ctrl);
 	DEBUG_INFO("Mass erase of bank started\n");
 	return true;
 }
 
 static bool stm32h7_wait_erase_bank(target_s *const target, platform_timeout_s *const timeout, const uint32_t reg_base)
 {
-	while (target_mem_read32(target, reg_base + FLASH_SR) & FLASH_SR_QW) {
+	while (target_mem32_read32(target, reg_base + FLASH_SR) & FLASH_SR_QW) {
 		if (target_check_error(target)) {
 			DEBUG_ERROR("mass erase bank: comm failed\n");
 			return false;
@@ -391,7 +504,7 @@ static bool stm32h7_wait_erase_bank(target_s *const target, platform_timeout_s *
 
 static bool stm32h7_check_bank(target_s *const target, const uint32_t reg_base)
 {
-	uint32_t status = target_mem_read32(target, reg_base + FLASH_SR);
+	uint32_t status = target_mem32_read32(target, reg_base + FLASH_SR);
 	if (status & FLASH_SR_ERROR_MASK)
 		DEBUG_ERROR("mass erase bank: error sr %" PRIx32 "\n", status);
 	return !(status & FLASH_SR_ERROR_MASK);
@@ -446,7 +559,7 @@ static bool stm32h7_uid(target_s *target, int argc, const char **argv)
 
 	tc_printf(target, "0x");
 	for (size_t i = 0; i < 12U; i += 4U) {
-		const uint32_t value = target_mem_read32(target, uid_addr + i);
+		const uint32_t value = target_mem32_read32(target, uid_addr + i);
 		tc_printf(target, "%02X%02X%02X%02X", (value >> 24U) & 0xffU, (value >> 16U) & 0xffU, (value >> 8U) & 0xffU,
 			value & 0xffU);
 	}
@@ -460,16 +573,16 @@ static bool stm32h7_crc_bank(target_s *target, uint32_t addr)
 	if (!stm32h7_flash_unlock(target, addr))
 		return false;
 
-	target_mem_write32(target, reg_base + FLASH_CR, FLASH_CR_CRC_EN);
+	target_mem32_write32(target, reg_base + FLASH_CR, FLASH_CR_CRC_EN);
 	const uint32_t crc_ctrl = FLASH_CRCCR_CRC_BURST_3 | FLASH_CRCCR_CLEAN_CRC | FLASH_CRCCR_ALL_BANK;
-	target_mem_write32(target, reg_base + FLASH_CRCCR, crc_ctrl);
-	target_mem_write32(target, reg_base + FLASH_CRCCR, crc_ctrl | FLASH_CRCCR_START_CRC);
+	target_mem32_write32(target, reg_base + FLASH_CRCCR, crc_ctrl);
+	target_mem32_write32(target, reg_base + FLASH_CRCCR, crc_ctrl | FLASH_CRCCR_START_CRC);
 	uint32_t status = FLASH_SR_CRC_BUSY;
-#ifdef ENABLE_DEBUG
+#if ENABLE_DEBUG == 1
 	const uint8_t bank = reg_base == FPEC1_BASE ? 1 : 2;
 #endif
 	while (status & FLASH_SR_CRC_BUSY) {
-		status = target_mem_read32(target, reg_base + FLASH_SR);
+		status = target_mem32_read32(target, reg_base + FLASH_SR);
 		if (target_check_error(target)) {
 			DEBUG_ERROR("CRC bank %u: comm failed\n", bank);
 			return false;
@@ -488,10 +601,10 @@ static bool stm32h7_crc(target_s *target, int argc, const char **argv)
 	(void)argv;
 	if (!stm32h7_crc_bank(target, STM32H7_FLASH_BANK1_BASE))
 		return false;
-	uint32_t crc1 = target_mem_read32(target, FPEC1_BASE + FLASH_CRCDATA);
+	uint32_t crc1 = target_mem32_read32(target, FPEC1_BASE + FLASH_CRCDATA);
 	if (!stm32h7_crc_bank(target, STM32H7_FLASH_BANK2_BASE))
 		return false;
-	uint32_t crc2 = target_mem_read32(target, FPEC2_BASE + FLASH_CRCDATA);
+	uint32_t crc2 = target_mem32_read32(target, FPEC2_BASE + FLASH_CRCDATA);
 	tc_printf(target, "CRC: bank1 0x%08lx, bank2 0x%08lx\n", crc1, crc2);
 	return true;
 }
@@ -535,6 +648,7 @@ static const struct {
 	{0x1000U, 'A'},
 	{0x1001U, 'Z'},
 	{0x1003U, 'Y'},
+	{0x1007U, 'X'}, /* RM0455 */
 	{0x2001U, 'X'},
 	{0x2003U, 'V'},
 };
@@ -544,25 +658,15 @@ static bool stm32h7_cmd_rev(target_s *target, int argc, const char **argv)
 	(void)argc;
 	(void)argv;
 	/* DBGMCU identity code register */
-	const uint32_t dbgmcu_idc = target_mem_read32(target, DBGMCU_IDC);
-	const uint16_t rev_id = (dbgmcu_idc >> 16U) & 0xffffU;
-	const uint16_t dev_id = (dbgmcu_idc & 0xfffU) << 4U;
+	const uint32_t dbgmcu_idc = target_mem32_read32(target, DBGMCU_IDC);
+	const uint16_t rev_id = dbgmcu_idc >> STM32H7_DBGMCU_IDCODE_REV_SHIFT;
+	const uint16_t dev_id = dbgmcu_idc & STM32H7_DBGMCU_IDCODE_DEV_MASK;
 
 	/* Print device */
 	switch (dev_id) {
 	case ID_STM32H74x:
 		tc_printf(target, "STM32H74x/75x\n");
-
-		/* Print revision */
-		char rev = '?';
-		for (size_t i = 0; i < ARRAY_LENGTH(stm32h7xx_revisions); i++) {
-			/* Check for matching revision */
-			if (stm32h7xx_revisions[i].rev_id == rev_id)
-				rev = stm32h7xx_revisions[i].revision;
-		}
-		tc_printf(target, "Revision %c\n", rev);
 		break;
-
 	case ID_STM32H7Bx:
 		tc_printf(target, "STM32H7B3/7A3/7B0\n");
 		break;
@@ -571,7 +675,16 @@ static bool stm32h7_cmd_rev(target_s *target, int argc, const char **argv)
 		break;
 	default:
 		tc_printf(target, "Unknown %s. BMP may not correctly support it!\n", target->driver);
+		return false;
 	}
+	/* Print revision */
+	char rev = '?';
+	for (size_t i = 0; i < ARRAY_LENGTH(stm32h7xx_revisions); i++) {
+		/* Check for matching revision */
+		if (stm32h7xx_revisions[i].rev_id == rev_id)
+			rev = stm32h7xx_revisions[i].revision;
+	}
+	tc_printf(target, "Revision %c\n", rev);
 
 	return true;
 }
